@@ -19,7 +19,7 @@ def main():
     subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyinstaller'], check=True)
     
     # PyInstaller 参数
-    app_name = "海外社区运营小助理"
+    app_name = "BB Typer"
     
     cmd = [
         sys.executable, '-m', 'PyInstaller',
@@ -30,6 +30,7 @@ def main():
         '--clean',     # 清理临时文件
         # 添加数据文件
         '--add-data', 'custom_dict.txt:.',
+        '--add-data', 'custom_dict_hk.txt:.',
         # macOS 特定设置
         '--osx-bundle-identifier', 'com.twtyper.app',
         # 隐藏导入

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-海外社区运营小助理 - 选中文字后按快捷键自动转换为目标语言
-Overseas Community Assistant - Auto-convert selected text to target language via hotkey
+BB Typer - 选中文字后按快捷键自动转换为目标语言
+BB Typer - Auto-convert selected text to target language via hotkey
 """
+
+APP_VERSION = '1.0.0'
+GITHUB_REPO = 'PandaHow/bb-typer'
 
 import sys
 import json
@@ -22,10 +25,10 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QSystemTrayIcon, QMenu, QAction, QFrame,
     QComboBox, QLineEdit, QScrollArea, QGridLayout, QTabWidget,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QInputDialog,
-    QListWidget, QListWidgetItem, QFileDialog, QCheckBox
+    QListWidget, QListWidgetItem, QFileDialog, QToolTip
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer
-from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QColor
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QCursor
 
 from pynput import keyboard
 from pynput.keyboard import Key, Controller
@@ -39,23 +42,24 @@ IS_WINDOWS = platform.system() == 'Windows'
 if IS_WINDOWS:
     import ctypes
     from ctypes import wintypes
-    user32 = ctypes.windll.user32
+    user32 = getattr(ctypes, 'windll').user32
 
 # Cross-platform clipboard
 try:
     import pyperclip
     HAS_PYPERCLIP = True
 except ImportError:
+    pyperclip = None
     HAS_PYPERCLIP = False
 
 
 # Data files
 DATA_FILE = Path(__file__).parent / 'stats.json'
 CUSTOM_DICT_FILE = Path(__file__).parent / 'custom_dict.txt'
+CUSTOM_DICT_HK_FILE = Path(__file__).parent / 'custom_dict_hk.txt'
 CONFIG_FILE = Path(__file__).parent / 'config.json'
 HISTORY_FILE = Path(__file__).parent / 'history.json'
 LOCK_FILE = Path(__file__).parent / '.app.lock'
-SENSITIVE_WORDS_CACHE_FILE = Path(__file__).parent / 'sensitive_words_cache.json'
 
 # Default hotkey
 DEFAULT_HOTKEY = {'modifier': 'cmd' if IS_MACOS else 'ctrl', 'key': 'a'}
@@ -86,23 +90,13 @@ DEFAULT_QUICK_TEMPLATES = {
 }
 
 TARGET_LANGUAGES = {
-    'zh-TW': ('🇹🇼 台湾繁体', 'zh-TW', True),
-    'zh-HK': ('🇭🇰 香港繁体', 'zh-TW', False),  # Google Translate 不支持 zh-HK，使用 zh-TW 近似
-    'en': ('🇬🇧 英语', 'en', False),
+    'zh-TW': ('🇨🇳 台湾繁体', 'zh-TW', True),
+    'zh-HK': ('🇭🇰 香港繁体', 'zh-TW', True),  # 使用本地词典 + OpenCC s2hk + LLM 润色
     'ja': ('🇯🇵 日语', 'ja', False),
     'ko': ('🇰🇷 韩语', 'ko', False),
-    'fr': ('🇫🇷 法语', 'fr', False),
-    'de': ('🇩🇪 德语', 'de', False),
-    'it': ('🇮🇹 意大利语', 'it', False),
-    'pt': ('🇧🇷 葡萄牙语', 'pt', False),
-    'ru': ('🇷🇺 俄语', 'ru', False),
-    'ar': ('🇸🇦 阿拉伯语', 'ar', False),
+    'en': ('🇬🇧 英语', 'en', False),
     'th': ('🇹🇭 泰语', 'th', False),
-    'vi': ('🇻🇳 越南语', 'vi', False),
-    'id': ('🇮🇩 印尼语', 'id', False),
-    'ms': ('🇲🇾 马来语', 'ms', False),
-    'tl': ('🇵🇭 菲律宾语', 'tl', False),
-    'my': ('🇲🇲 缅甸语', 'my', False),
+    'fr': ('🇫🇷 法语', 'fr', False),
 }
 
 SENTENCE_PATTERNS = [
@@ -275,23 +269,9 @@ SENTENCE_PATTERNS = [
     (r'厉害了', r'太厲害了吧'),
 ]
 
-SENSITIVE_WORDS = {
-    'political': ['习近平', '天安门', '六四', '法轮功', '台独', '藏独'],
-    'religious': ['真主', '穆罕默德', '清真'],
-    'cultural': ['支那', '鬼子', '棒子'],
-}
-
-SENSITIVE_WORDS_URLS = [
-    ('political', 'https://raw.githubusercontent.com/fwwdn/sensitive-stop-words/master/政治类.txt'),
-    ('sexual', 'https://raw.githubusercontent.com/fwwdn/sensitive-stop-words/master/色情类.txt'),
-    ('political2', 'https://raw.githubusercontent.com/selfcs/stop-and-sensitive-words/main/%E6%94%BF%E6%B2%BB%E6%95%8F%E6%84%9F%E8%AF%8D.txt'),
-    ('sexual2', 'https://raw.githubusercontent.com/selfcs/stop-and-sensitive-words/main/%E8%89%B2%E6%83%85%E6%95%8F%E6%84%9F%E8%AF%8D.txt'),
-    ('illegal', 'https://raw.githubusercontent.com/selfcs/stop-and-sensitive-words/main/%E8%BF%9D%E6%B3%95%E6%95%8F%E6%84%9F%E8%AF%8D.txt'),
-]
-
 # Language -> timezone city mapping
 LANG_TIMEZONE_MAP = {
-    'zh-TW': ('台北', 'Asia/Taipei', '🇹🇼'),
+    'zh-TW': ('台北', 'Asia/Taipei', '🇨🇳'),
     'zh-HK': ('香港', 'Asia/Hong_Kong', '🇭🇰'),
     'en': ('伦敦', 'Europe/London', '🇬🇧'),
     'ja': ('东京', 'Asia/Tokyo', '🇯🇵'),
@@ -310,16 +290,9 @@ LANG_TIMEZONE_MAP = {
     'my': ('仰光', 'Asia/Yangon', '🇲🇲'),
 }
 
-PLATFORM_LIMITS = {
-    'Discord': 2000,
-    'Twitter': 280,
-    'WeChat': 500,
-    'LINE': 5000,
-}
-
 THEMES = {
     'light': {
-        'bg': '#EDEDED',
+        'bg': '#E8EDF2',
         'card': '#FFFFFF',
         'card_alt': '#F7F7F7',
         'text': '#111111',
@@ -336,109 +309,47 @@ THEMES = {
         'input_bg': '#F7F7F7',
         'disabled_bg': '#C8C8C8',
         'disabled_hover': '#B0B0B0',
-    },
-    'dark': {
-        'bg': '#1E1E1E',
-        'card': '#2D2D2D',
-        'card_alt': '#363636',
-        'text': '#E0E0E0',
-        'text_secondary': '#888888',
-        'border': '#404040',
-        'hover': '#3A3A3A',
-        'accent': '#07C160',
-        'accent_hover': '#06AD56',
-        'link': '#7A9EC7',
-        'danger': '#FA5151',
-        'danger_hover': '#FF6B6B',
-        'tab_bg': '#252525',
-        'tab_selected_bg': '#2D2D2D',
-        'input_bg': '#363636',
-        'disabled_bg': '#555555',
-        'disabled_hover': '#666666',
     }
 }
+# LLM 配置：使用 Pie Gateway
 PIE_BASE_URL = os.environ.get('PIE_BASE_URL', 'http://8.222.169.8:3000')
 PIE_TOKEN = os.environ.get('PIE_TOKEN', '')
-LLM_MODEL = 'gemini-2.5-flash-lite'
+PIE_LLM_MODEL = 'gemini-2.5-flash-lite'
 
 LLM_SYSTEM_PROMPT = '''你是一個台灣繁體中文潤色助手。你的任務是將已經初步轉換的繁體中文文字，潤色成更自然、更道地的台灣口語表達。
 
 規則：
 1. 保持原意不變，只調整用詞和語氣
-2. 使用台灣人日常說話的方式
-3. 適當加入台灣語氣詞（喔、啦、欸、齁、蛤）
-4. 不要過度修改，保持自然
-5. 不要加引號、不要解釋、不要加任何前綴後綴
-6. 直接輸出潤色後的文字，不要輸出其他任何內容
-7. 如果原文已經很自然，就直接輸出原文'''
+2. 使用台灣人日常說話的方式，包括台灣特有的俗語、網路用語和流行語
+3. 適當加入台灣語氣詞（喔、啦、欸、齁、蛤、捏、der）
+4. 將大陸俗語/網路用語轉為台灣等價表達，例如：
+   - 「給力」→「讚」或「超讚」
+   - 「666」→「太神了」
+   - 「躺平」→「躺平」（兩岸通用可保留）
+   - 「yyds」→「YYDS」或「永遠的神」
+   - 「絕絕子」→「太扯了吧」
+   - 「內卷」→「捲」
+5. 不要過度修改，保持自然
+6. 不要加引號、不要解釋、不要加任何前綴後綴
+7. 直接輸出潤色後的文字，不要輸出其他任何內容
+8. 如果原文已經很自然，就直接輸出原文'''
 
+LLM_SYSTEM_PROMPT_HK = '''你是一個香港繁體中文潤色助手。你的任務是將已經初步轉換的繁體中文文字，潤色成更自然、更地道的香港廣東話書面表達。
 
-# Global sensitive words list
-LOADED_SENSITIVE_WORDS = []
-SENSITIVE_WORDS_LOCK = Lock()
-
-def load_sensitive_words():
-    """Load sensitive words from cache or fetch from online sources"""
-    # Check cache first
-    if SENSITIVE_WORDS_CACHE_FILE.exists():
-        try:
-            with open(SENSITIVE_WORDS_CACHE_FILE, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
-                cache_time = cache_data.get('timestamp', 0)
-                # Check if cache is less than 7 days old
-                if time.time() - cache_time < 7 * 24 * 3600:
-                    return cache_data.get('words', [])
-        except Exception as e:
-            print(f'[Cache read error] {e}')
-    
-    # Fetch from online sources
-    all_words = set()
-    
-    # Add hardcoded base words
-    for words_list in SENSITIVE_WORDS.values():
-        all_words.update(words_list)
-    
-    # Fetch from URLs
-    for category, url in SENSITIVE_WORDS_URLS:
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                content = response.read().decode('utf-8')
-                for line in content.split('\n'):
-                    word = line.strip().rstrip(',')
-                    if word:
-                        all_words.add(word)
-            print(f'[Sensitive words] Loaded {category} from online')
-        except Exception as e:
-            print(f'[Sensitive words] Failed to load {category}: {e}')
-    
-    # Convert to list
-    words_list = list(all_words)
-    
-    # Save to cache
-    try:
-        cache_data = {
-            'timestamp': time.time(),
-            'words': words_list
-        }
-        with open(SENSITIVE_WORDS_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, ensure_ascii=False)
-        print(f'[Sensitive words] Cached {len(words_list)} words')
-    except Exception as e:
-        print(f'[Cache write error] {e}')
-    
-    return words_list
-
-
-def fetch_sensitive_words_async(callback=None):
-    """Fetch sensitive words in background thread"""
-    def _fetch():
-        words = load_sensitive_words()
-        if callback:
-            callback(words)
-    
-    thread = Thread(target=_fetch, daemon=True)
-    thread.start()
+規則：
+1. 保持原意不變，只調整用詞和語氣
+2. 使用香港人日常書寫的方式，包括香港特有的俗語和網路用語
+3. 適當加入香港語氣詞（啡、啦、喓、吗、嘻、喊）
+4. 將大陸用語轉為香港等價表達，例如：
+   - 「給力」→「勁」
+   - 「牛逼」→「勁」或「超勁」
+   - 「絕絕子」→「絕了」
+   - 「內卷」→「捲」
+   - 「單車」→「單車」（通用可保留）
+5. 不要過度修改，保持自然
+6. 不要加引號、不要解釋、不要加任何前綴後綴
+7. 直接輸出潤色後的文字，不要輸出其他任何內容
+8. 如果原文已經很自然，就直接輸出原文'''
 
 def apply_sentence_patterns(text: str) -> str:
     for pattern, replacement in SENTENCE_PATTERNS:
@@ -446,27 +357,26 @@ def apply_sentence_patterns(text: str) -> str:
     return text
 
 
-def llm_polish(text: str) -> str:
+def llm_polish(text: str, system_prompt: str = '') -> str:
+    """使用 Pie Gateway LLM 润色"""
+    prompt = system_prompt or LLM_SYSTEM_PROMPT
     if not PIE_TOKEN:
         return text
-    
     try:
         url = f'{PIE_BASE_URL}/v1/app/chat/completions'
         payload = json.dumps({
-            'model': LLM_MODEL,
+            'model': PIE_LLM_MODEL,
             'messages': [
-                {'role': 'system', 'content': LLM_SYSTEM_PROMPT},
+                {'role': 'system', 'content': prompt},
                 {'role': 'user', 'content': text}
             ],
             'max_tokens': 500,
             'temperature': 0.3
         }).encode('utf-8')
-        
         req = urllib.request.Request(url, data=payload, method='POST')
         req.add_header('Content-Type', 'application/json')
         req.add_header('Authorization', f'Bearer {PIE_TOKEN}')
-        
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:
             result = json.loads(resp.read().decode('utf-8'))
             polished = result['choices'][0]['message']['content'].strip()
             if len(polished) > len(text) * 3 or len(polished) < len(text) * 0.3:
@@ -474,6 +384,40 @@ def llm_polish(text: str) -> str:
             return polished
     except Exception:
         return text
+
+
+def is_simplified_chinese(text: str) -> bool:
+    """Detect if text is predominantly simplified Chinese.
+    Uses Google Translate's language detection via translating with sl=auto.
+    Falls back to character-based heuristic if API fails.
+    """
+    # Quick heuristic: count CJK characters
+    cjk_chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
+    if not cjk_chars:
+        return False  # No Chinese characters at all
+    # Try Google Translate's auto-detect
+    try:
+        url = 'https://translate.googleapis.com/translate_a/single'
+        params = urllib.parse.urlencode({
+            'client': 'gtx', 'sl': 'auto', 'tl': 'en', 'dt': 't', 'q': text[:100]
+        })
+        req = urllib.request.Request(f'{url}?{params}')
+        req.add_header('User-Agent', 'Mozilla/5.0')
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            detected_lang = data[2] if len(data) > 2 else ''
+            return detected_lang == 'zh-CN'
+    except Exception:
+        # Fallback: use OpenCC to convert to simplified and compare
+        # If text barely changes, it's already simplified
+        try:
+            converter_t2s = OpenCC('t2s')
+            simplified = converter_t2s.convert(text)
+            # If converting trad→simplified changes very few characters, text is already simplified
+            diff_count = sum(1 for a, b in zip(text, simplified) if a != b)
+            return diff_count < len(cjk_chars) * 0.15
+        except Exception:
+            return True  # Default assume simplified
 
 
 def google_translate(text: str, target_lang: str = 'zh-TW', source_lang: str = 'zh-CN') -> str:
@@ -499,7 +443,7 @@ def google_translate(text: str, target_lang: str = 'zh-TW', source_lang: str = '
 
 
 def get_clipboard() -> str:
-    if HAS_PYPERCLIP:
+    if HAS_PYPERCLIP and pyperclip is not None:
         return pyperclip.paste()
     elif IS_MACOS:
         result = subprocess.run(['pbpaste'], capture_output=True, text=True, timeout=1)
@@ -511,7 +455,7 @@ def get_clipboard() -> str:
 
 
 def set_clipboard(text: str):
-    if HAS_PYPERCLIP:
+    if HAS_PYPERCLIP and pyperclip is not None:
         pyperclip.copy(text)
     elif IS_MACOS:
         subprocess.run(['pbcopy'], input=text.encode('utf-8'), timeout=1)
@@ -527,11 +471,7 @@ def load_config() -> dict:
     default = {
         'hotkey': DEFAULT_HOTKEY,
         'target_lang': 'zh-TW',
-        'translate_direction': 'cn_to_foreign',
         'llm_polish': True,
-        'platform': 'Discord',
-        'sensitive_words': SENSITIVE_WORDS,
-        'theme': 'light'
     }
     if CONFIG_FILE.exists():
         try:
@@ -549,10 +489,11 @@ def save_config(config: dict):
     CONFIG_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2))
 
 
-def load_custom_dict() -> dict:
+def load_custom_dict(dict_file=None) -> dict:
     mappings = {}
-    if CUSTOM_DICT_FILE.exists():
-        for line in CUSTOM_DICT_FILE.read_text().splitlines():
+    filepath = dict_file or CUSTOM_DICT_FILE
+    if filepath.exists():
+        for line in filepath.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith('#'):
                 parts = line.split('\t')
@@ -560,27 +501,6 @@ def load_custom_dict() -> dict:
                     mappings[parts[0]] = parts[1]
     sorted_mappings = dict(sorted(mappings.items(), key=lambda x: len(x[0]), reverse=True))
     return sorted_mappings
-
-
-def detect_sensitive_words(text: str, sensitive_dict: dict) -> list:
-    found = []
-    
-    # Use loaded online words if available
-    global LOADED_SENSITIVE_WORDS
-    with SENSITIVE_WORDS_LOCK:
-        words_to_check = LOADED_SENSITIVE_WORDS if LOADED_SENSITIVE_WORDS else []
-    
-    # Also check custom words from config
-    for category, words in sensitive_dict.items():
-        words_to_check.extend(words)
-    
-    # Check all words
-    for word in words_to_check:
-        if word and word in text:
-            found.append(word)
-    
-    return found
-
 
 def get_timezone_time(tz_name: str) -> str:
     offsets = {
@@ -615,7 +535,6 @@ class KeyboardSignal(QObject):
     key_pressed = pyqtSignal(str)
     conversion_done = pyqtSignal(str, str)
     google_status = pyqtSignal(bool)
-    sensitive_warning = pyqtSignal(list)
     history_updated = pyqtSignal()
 
 
@@ -693,165 +612,21 @@ class ClipboardHistory:
         return self.items
 
 
-class SettingsDialog(QDialog):
-    def __init__(self, parent, config):
-        super().__init__(parent)
-        self.config = config
-        self.parent_window = parent
-        self.setWindowTitle('设置')
-        self.setFixedSize(500, 600)
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        
-        tabs = QTabWidget()
-        tabs.addTab(self.create_hotkey_tab(), '快捷键')
-        tabs.addTab(self.create_appearance_tab(), '外观')
-        tabs.addTab(self.create_ai_tab(), 'AI 润色')
-        # timezone tab removed - timezone now auto-follows language selection
-        tabs.addTab(self.create_platform_tab(), '平台限制')
-        tabs.addTab(self.create_sensitive_tab(), '敏感词')
-        
-        layout.addWidget(tabs)
-        
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-    
-    def create_hotkey_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        label = QLabel('当前快捷键: ' + self.parent_window.format_hotkey())
-        layout.addWidget(label)
-        
-        btn = QPushButton('点击设置新快捷键')
-        btn.clicked.connect(self.parent_window.start_recording_hotkey)
-        layout.addWidget(btn)
-        
-        layout.addStretch()
-        return widget
-    
-    def create_appearance_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        label = QLabel('主题设置:')
-        layout.addWidget(label)
-        
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItem('浅色模式', 'light')
-        self.theme_combo.addItem('深色模式', 'dark')
-        
-        # Pre-select based on current theme
-        current_theme = self.parent_window.current_theme
-        for i in range(self.theme_combo.count()):
-            if self.theme_combo.itemData(i) == current_theme:
-                self.theme_combo.setCurrentIndex(i)
-                break
-        
-        layout.addWidget(self.theme_combo)
-        layout.addStretch()
-        return widget
-    
-    def create_ai_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        self.ai_checkbox = QCheckBox('AI 润色开启 (仅适用于台湾繁体)')
-        self.ai_checkbox.setChecked(self.config.get('llm_polish', True))
-        layout.addWidget(self.ai_checkbox)
-        
-        layout.addStretch()
-        return widget
-    
-    # create_timezone_tab removed - timezone now auto-follows language selection
-    
-    def create_platform_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        label = QLabel('选择平台字数限制:')
-        layout.addWidget(label)
-        
-        self.platform_combo = QComboBox()
-        for platform, limit in PLATFORM_LIMITS.items():
-            self.platform_combo.addItem(f'{platform} ({limit} 字)', platform)
-        
-        current_platform = self.config.get('platform', 'Discord')
-        for i in range(self.platform_combo.count()):
-            if self.platform_combo.itemData(i) == current_platform:
-                self.platform_combo.setCurrentIndex(i)
-                break
-        
-        layout.addWidget(self.platform_combo)
-        layout.addStretch()
-        return widget
-    
-    def create_sensitive_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        label = QLabel('敏感词管理 (每行一个):')
-        layout.addWidget(label)
-        
-        self.sensitive_text = QTextEdit()
-        sensitive_dict = self.config.get('sensitive_words', SENSITIVE_WORDS)
-        all_words = []
-        for words in sensitive_dict.values():
-            all_words.extend(words)
-        self.sensitive_text.setPlainText('\n'.join(all_words))
-        layout.addWidget(self.sensitive_text)
-        
-        # Add refresh button
-        refresh_btn = QPushButton('🔄 更新词库')
-        refresh_btn.clicked.connect(self.refresh_sensitive_words)
-        layout.addWidget(refresh_btn)
-        
-        layout.addStretch()
-        return widget
-    
-    def refresh_sensitive_words(self):
-        """Refresh sensitive words from online sources"""
-        from PyQt5.QtWidgets import QMessageBox
-        
-        # Delete cache to force refresh
-        if SENSITIVE_WORDS_CACHE_FILE.exists():
-            SENSITIVE_WORDS_CACHE_FILE.unlink()
-        
-        # Show loading message
-        QMessageBox.information(self, '更新词库', '正在从在线源更新敏感词库，请稍候...')
-        
-        # Fetch in background
-        def on_loaded(words):
-            self.parent_window.on_sensitive_words_loaded(words)
-            QMessageBox.information(self, '更新完成', f'已更新 {len(words)} 个敏感词')
-        
-        fetch_sensitive_words_async(on_loaded)
-    
-    def accept(self):
-        self.config['llm_polish'] = self.ai_checkbox.isChecked()
+class TemplateButton(QPushButton):
+    """Button that shows tooltip on hover immediately"""
+    def __init__(self, name, full_text, parent=None):
+        super().__init__(name, parent)
+        self._full_text = full_text
 
-        self.config['platform'] = self.platform_combo.currentData()
-        
-        # Handle theme change
-        new_theme = self.theme_combo.currentData()
-        if new_theme != self.parent_window.current_theme:
-            self.parent_window.current_theme = new_theme
-            self.config['theme'] = new_theme
-            self.parent_window.apply_theme()
-            self.parent_window.load_templates_ui()
-        
-        words_text = self.sensitive_text.toPlainText().strip()
-        if words_text:
-            words = [w.strip() for w in words_text.split('\n') if w.strip()]
-            self.config['sensitive_words'] = {'custom': words}
-        
-        save_config(self.config)
-        super().accept()
+    def enterEvent(self, event):
+        if self._full_text:
+            QToolTip.showText(QCursor.pos(), self._full_text, self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
 
 
 class TaiwanConverterWindow(QMainWindow):
@@ -859,10 +634,11 @@ class TaiwanConverterWindow(QMainWindow):
         super().__init__()
         self.converter = OpenCC('s2twp')
         self.custom_dict = load_custom_dict()
+        self.converter_hk = OpenCC('s2hk')
+        self.custom_dict_hk = load_custom_dict(CUSTOM_DICT_HK_FILE)
         self.keyboard_controller = Controller()
         self.stats = StatsManager()
         self.config = load_config()
-        self.current_theme = self.config.get('theme', 'light')
         self.history = ClipboardHistory()
         self.is_enabled = True
         self.is_converting = False
@@ -874,13 +650,14 @@ class TaiwanConverterWindow(QMainWindow):
         self.alt_pressed = False
         self.shift_pressed = False
         self.recording_hotkey = False
+        self.pending_hotkey = None
+        self.translation_cache = {}  # {translated_text: original_text} 用于反向还原
         
         self.signal = KeyboardSignal()
         self.signal.stats_updated.connect(self.update_stats_display)
         self.signal.key_pressed.connect(self.update_key_display)
         self.signal.conversion_done.connect(self.update_conversion_display)
         self.signal.google_status.connect(self.update_google_status)
-        self.signal.sensitive_warning.connect(self.show_sensitive_warning)
         self.signal.history_updated.connect(self.update_history_display)
         
         self.listener = None
@@ -899,202 +676,215 @@ class TaiwanConverterWindow(QMainWindow):
         self.timezone_timer.start(60000)
         self.update_timezone_display()
         
-        # Fetch sensitive words on startup
-        fetch_sensitive_words_async(self.on_sensitive_words_loaded)
-        
-        # Timer to refresh sensitive words every 24 hours
-        self.sensitive_words_timer = QTimer()
-        self.sensitive_words_timer.timeout.connect(lambda: fetch_sensitive_words_async(self.on_sensitive_words_loaded))
-        self.sensitive_words_timer.start(24 * 3600 * 1000)  # 24 hours in milliseconds
+        # 启动 3 秒后检查更新
+        QTimer.singleShot(3000, self.check_for_updates)
     
     def init_ui(self):
-        self.setWindowTitle('🔧 海外社区运营小助理')
-        self.setFixedSize(420, 700)
-        
+        self.setWindowTitle(f'BB Typer v{APP_VERSION}')
+        self.setFixedSize(380, 420)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.top_bar = self.create_top_bar()
-        main_layout.addWidget(self.top_bar)
-        
-        self.action_row = self.create_action_row()
-        main_layout.addWidget(self.action_row)
-        
-        self.timezone_bar = self.create_timezone_bar()
-        main_layout.addWidget(self.timezone_bar)
-        
-        self.settings_row = self.create_settings_button()
-        main_layout.addWidget(self.settings_row)
-        
-        content_tabs = self.create_content_tabs()
-        main_layout.addWidget(content_tabs, 1)
-        self.status_bar_frame = self.create_status_bar()
-        main_layout.addWidget(self.status_bar_frame)
-    
+
+        self.main_tabs = QTabWidget()
+        self.main_tabs.addTab(self._create_core_tab(), '语言设置')
+        self.main_tabs.addTab(self._create_toolbox_tab(), '工具箱')
+        main_layout.addWidget(self.main_tabs)
+
         self.apply_theme()
-    def create_top_bar(self):
-        bar = QFrame()
-        bar.setFixedHeight(48)
-        
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(15, 0, 15, 0)
-        
-        title = QLabel('🔧 海外社区运营小助理')
-        title.setFont(QFont('PingFang SC', 16, QFont.Bold))
-        layout.addWidget(title)
-        
-        layout.addStretch()
-        
-        
+
+    def _create_core_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 16, 20, 12)
+        layout.setSpacing(0)
+
+        # ── Status header: Google status (left) + toggle (right) ──
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+
         self.google_status_label = QLabel('🟢 Google已连接')
-        self.google_status_label.setFont(QFont('PingFang SC', 12))
-        layout.addWidget(self.google_status_label)
-        
-        return bar
-    
-    def create_action_row(self):
-        row = QFrame()
-        row.setFixedHeight(56)
-        
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(15, 0, 15, 0)
-        
-        globe_label = QLabel('🌐')
-        globe_label.setFont(QFont('PingFang SC', 18))
-        layout.addWidget(globe_label)
-        
+        self.google_status_label.setFont(QFont('PingFang SC', 11))
+        header.addWidget(self.google_status_label)
+
+        self.google_help_btn = QPushButton('?')
+        self.google_help_btn.setFixedSize(20, 20)
+        self.google_help_btn.clicked.connect(self.show_google_help)
+        header.addWidget(self.google_help_btn)
+
+        header.addStretch()
+
+        self.toggle_btn = QPushButton('⏸ 暂停')
+        self.toggle_btn.setFixedHeight(26)
+        self.toggle_btn.clicked.connect(self.toggle_enabled)
+        header.addWidget(self.toggle_btn)
+
+        layout.addLayout(header)
+        layout.addSpacing(14)
+
+        # ── Main control card ──
+        card = QFrame()
+        card.setObjectName('core_card')
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(14)
+
+        # Row 1: Language
+        lang_row = QHBoxLayout()
+        lang_row.setSpacing(0)
+        lang_lbl = QLabel('语言')
+        lang_lbl.setFont(QFont('PingFang SC', 13))
+        lang_lbl.setFixedWidth(60)
+        lang_row.addWidget(lang_lbl)
         self.lang_combo = QComboBox()
-        self.lang_combo.setFixedWidth(150)
-        
+        self.lang_combo.setFixedHeight(30)
         for key, (display_name, _, _) in TARGET_LANGUAGES.items():
             self.lang_combo.addItem(display_name, key)
-        
         current_lang = self.config.get('target_lang', 'zh-TW')
         for i in range(self.lang_combo.count()):
             if self.lang_combo.itemData(i) == current_lang:
                 self.lang_combo.setCurrentIndex(i)
                 break
-        
         self.lang_combo.currentIndexChanged.connect(self.on_lang_changed)
-        layout.addWidget(self.lang_combo)
-        
-        convert_label = QLabel(self.format_hotkey() + ' 转换')
-        convert_label.setFont(QFont('PingFang SC', 13))
-        convert_label.setStyleSheet('color: #999999; margin-left: 10px;')
-        layout.addWidget(convert_label)
-        
-        layout.addStretch()
-        
-        self.direction_btn = QPushButton('🔄 双向')
-        self.direction_btn.setCheckable(True)
-        self.direction_btn.setChecked(self.config.get('translate_direction') == 'foreign_to_cn')
-        self.direction_btn.clicked.connect(self.toggle_direction)
-        layout.addWidget(self.direction_btn)
-        
-        help_btn = QPushButton('?')
-        help_btn.setFixedSize(22, 22)
-        help_btn.setStyleSheet('''
-            QPushButton {
-                font-size: 13px;
-                background-color: #D9D9D9;
-                color: #999999;
-                border: none;
-                border-radius: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #07C160;
-                color: white;
-            }
-        ''')
-        help_btn.clicked.connect(lambda: QMessageBox.information(self, '双向翻译',
-            '默认模式：中文 → 目标语言\n'
-            '点击「🔄 双向」按钮开启反向模式：\n'
-            '目标语言 → 中文\n\n'
-            '例如选择日语时：\n'
-            '· 默认：中文输入 → 日语输出\n'
-            '· 双向：日语输入 → 中文输出'))
-        layout.addWidget(help_btn)
-        
-        return row
-    
-    def create_timezone_bar(self):
-        bar = QFrame()
-        bar.setFixedHeight(36)
-        
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(15, 0, 15, 0)
-        
-        clock_label = QLabel('🕐')
-        layout.addWidget(clock_label)
-        
+        lang_row.addWidget(self.lang_combo)
+        card_layout.addLayout(lang_row)
+
+        # Separator
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.HLine)
+        sep1.setObjectName('card_sep')
+        card_layout.addWidget(sep1)
+
+        # Row 2: Hotkey
+        hotkey_row = QHBoxLayout()
+        hotkey_row.setSpacing(0)
+        hotkey_lbl = QLabel('快捷键')
+        hotkey_lbl.setFont(QFont('PingFang SC', 13))
+        hotkey_lbl.setFixedWidth(60)
+        hotkey_row.addWidget(hotkey_lbl)
+        self.hotkey_value_label = QLabel(self.format_hotkey())
+        self.hotkey_value_label.setFont(QFont('PingFang SC', 13, QFont.Bold))
+        hotkey_row.addWidget(self.hotkey_value_label)
+        hotkey_row.addStretch()
+        self.change_hotkey_btn = QPushButton('修改')
+        self.change_hotkey_btn.setFixedHeight(26)
+        self.change_hotkey_btn.clicked.connect(self.start_recording_hotkey)
+        hotkey_row.addWidget(self.change_hotkey_btn)
+
+        self.confirm_hotkey_btn = QPushButton('确定')
+        self.confirm_hotkey_btn.setFixedHeight(26)
+        self.confirm_hotkey_btn.clicked.connect(self.finish_recording_hotkey)
+        self.confirm_hotkey_btn.hide()
+        hotkey_row.addWidget(self.confirm_hotkey_btn)
+
+        self.cancel_hotkey_btn = QPushButton('取消')
+        self.cancel_hotkey_btn.setFixedHeight(26)
+        self.cancel_hotkey_btn.clicked.connect(self.cancel_recording_hotkey)
+        self.cancel_hotkey_btn.hide()
+        hotkey_row.addWidget(self.cancel_hotkey_btn)
+        card_layout.addLayout(hotkey_row)
+
+        # Separator
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setObjectName('card_sep')
+        card_layout.addWidget(sep2)
+
+        # Row 3: Timezone
+        tz_row = QHBoxLayout()
+        tz_row.setSpacing(0)
+        tz_lbl = QLabel('时区')
+        tz_lbl.setFont(QFont('PingFang SC', 13))
+        tz_lbl.setFixedWidth(60)
+        tz_row.addWidget(tz_lbl)
         self.timezone_label = QLabel('')
-        self.timezone_label.setFont(QFont('PingFang SC', 12))
-        layout.addWidget(self.timezone_label)
-        
+        self.timezone_label.setFont(QFont('PingFang SC', 13))
+        tz_row.addWidget(self.timezone_label)
+        tz_row.addStretch()
+        card_layout.addLayout(tz_row)
+
+        layout.addWidget(card)
+        layout.addSpacing(10)
+
+        # ── AI 润色状态 ──
+        ai_card = QFrame()
+        ai_card.setObjectName('ai_card')
+        ai_layout = QHBoxLayout(ai_card)
+        ai_layout.setContentsMargins(10, 6, 10, 6)
+        ai_layout.setSpacing(8)
+        ai_lbl = QLabel('AI 润色')
+        ai_lbl.setFont(QFont('PingFang SC', 11))
+        ai_layout.addWidget(ai_lbl)
+        self.ai_status_lbl = QLabel()
+        self.ai_status_lbl.setFont(QFont('PingFang SC', 10))
+        ai_layout.addWidget(self.ai_status_lbl)
+        ai_layout.addStretch()
+        self.ai_toggle_btn = QPushButton()
+        self.ai_toggle_btn.setFixedHeight(26)
+        self.ai_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ai_toggle_btn.clicked.connect(self.toggle_ai_polish)
+        ai_layout.addWidget(self.ai_toggle_btn)
+        ai_help_btn = QPushButton('?')
+        ai_help_btn.setFixedSize(20, 20)
+        ai_help_btn.clicked.connect(self.show_ai_help)
+        self.ai_help_btn = ai_help_btn
+        ai_layout.addWidget(ai_help_btn)
+        layout.addWidget(ai_card)
+        self.update_ai_status()
+
+        # ── Stats bar ──
+        self.status_bar_frame = QFrame()
+        self.status_bar_frame.setObjectName('stats_bar')
+        stats_layout = QHBoxLayout(self.status_bar_frame)
+        stats_layout.setContentsMargins(16, 8, 16, 8)
+        self.stats_label = QLabel('今日 0 字 | 累计 0 字')
+        self.stats_label.setFont(QFont('PingFang SC', 12))
+        stats_layout.addWidget(self.stats_label)
+        stats_layout.addStretch()
+        self.update_stats_display()
+        layout.addWidget(self.status_bar_frame)
+
+        # ── Bottom buttons: tutorial + feedback ──
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(10)
+        self.tutorial_btn = QPushButton('📖 使用教程')
+        self.tutorial_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tutorial_btn.clicked.connect(self.show_tutorial)
+        bottom_row.addWidget(self.tutorial_btn)
+        self.feedback_btn = QPushButton('💬 提交反馈')
+        self.feedback_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.feedback_btn.clicked.connect(self.open_feedback)
+        bottom_row.addWidget(self.feedback_btn)
+        layout.addLayout(bottom_row)
+
         layout.addStretch()
-        
-        return bar
-    
-    def create_settings_button(self):
-        bar = QFrame()
-        bar.setFixedHeight(44)
-        
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(15, 6, 15, 6)
-        
-        settings_btn = QPushButton('设  置')
-        settings_btn.setFixedHeight(32)
-        settings_btn.setFixedWidth(390)
-        settings_btn.setFont(QFont('PingFang SC', 14))
-        settings_btn.setCursor(Qt.PointingHandCursor)
-        settings_btn.clicked.connect(self.open_settings)
-        layout.addWidget(settings_btn)
-        
-        self.settings_row = bar
-        return bar
-    
-    def create_content_tabs(self):
-        """Create main content area with '快速回复' and '翻译历史' tabs"""
+        return widget
+
+    def _create_toolbox_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(10)
         self.content_tabs = QTabWidget()
-        self.content_tabs.setStyleSheet('''
-            QTabWidget::pane {
-                background-color: #FFFFFF;
-                border: none;
-                border-top: 1px solid #D9D9D9;
-            }
-            QTabBar::tab {
-                background-color: #EDEDED;
-                color: #999999;
-                padding: 8px 20px;
-                margin-right: 2px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                font-size: 14px;
-            }
-            QTabBar::tab:selected {
-                background-color: #FFFFFF;
-                color: #07C160;
-                font-weight: bold;
-            }
-            QTabBar::tab:hover {
-                background-color: #D8D8D8;
-            }
-        ''')
-        
-        # Tab 1: 快速回复
-        templates_widget = self._create_templates_tab()
-        self.content_tabs.addTab(templates_widget, '💬 快速回复')
-        
-        # Tab 2: 翻译历史
-        history_widget = self._create_history_tab()
-        self.content_tabs.addTab(history_widget, '📋 翻译历史')
-        
-        return self.content_tabs
-    
+        self.content_tabs.addTab(self._create_templates_tab(), '💬 快速回复')
+        self.content_tabs.addTab(self._create_history_tab(), '📋 翻译历史')
+        layout.addWidget(self.content_tabs, 1)
+
+        self.preview_original = QLabel('')
+        self.preview_original.setFont(QFont('PingFang SC', 12))
+        self.preview_original.setVisible(False)
+        layout.addWidget(self.preview_original)
+
+        self.preview_converted = QLabel('')
+        self.preview_converted.setFont(QFont('PingFang SC', 12))
+        self.preview_converted.setVisible(False)
+        layout.addWidget(self.preview_converted)
+
+        return widget
+
     def _create_templates_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -1234,53 +1024,11 @@ class TaiwanConverterWindow(QMainWindow):
         
         return widget
 
-    def create_status_bar(self):
-        bar = QFrame()
-        bar.setFixedHeight(36)
-        
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(15, 0, 15, 0)
-        
-        # Preview labels (hidden by default)
-        self.preview_original = QLabel('')
-        self.preview_original.setFont(QFont('PingFang SC', 12))
-        self.preview_original.setVisible(False)
-        layout.addWidget(self.preview_original)
-        
-        self.preview_converted = QLabel('')
-        self.preview_converted.setFont(QFont('PingFang SC', 12))
-        self.preview_converted.setVisible(False)
-        layout.addWidget(self.preview_converted)
-        
-        self.char_count_label = QLabel('')
-        self.char_count_label.setFont(QFont('PingFang SC', 12))
-        self.char_count_label.setVisible(False)
-        layout.addWidget(self.char_count_label)
-        
-        self.sensitive_warning_label = QLabel('')
-        self.sensitive_warning_label.setFont(QFont('PingFang SC', 12))
-        self.sensitive_warning_label.setVisible(False)
-        layout.addWidget(self.sensitive_warning_label)
-        
-        self.stats_label = QLabel('今日 0 字 | 累计 0 字')
-        self.stats_label.setFont(QFont('PingFang SC', 12))
-        layout.addWidget(self.stats_label)
-        
-        layout.addStretch()
-        
-        self.toggle_btn = QPushButton('⏸ 暂停')
-        self.toggle_btn.clicked.connect(self.toggle_enabled)
-        layout.addWidget(self.toggle_btn)
-        
-        self.update_stats_display()
-        
-        return bar
-    
-    
+
     def apply_theme(self):
-        t = THEMES[self.current_theme]
-        
-        # Main window
+        t = THEMES['light']
+
+        # Window background
         self.setStyleSheet(f'''
             QMainWindow {{
                 background-color: {t['bg']};
@@ -1288,29 +1036,100 @@ class TaiwanConverterWindow(QMainWindow):
             QLabel {{
                 color: {t['text']};
             }}
+            QToolTip {{
+                background-color: #FFFFFF;
+                color: #1F2329;
+                border: 1px solid #D0D7DE;
+                border-radius: 8px;
+                padding: 8px 10px;
+                font-size: 12px;
+            }}
         ''')
-        
-        # Top bar
-        self.top_bar.setStyleSheet(f'background-color: {t["bg"]}; border-bottom: 1px solid {t["border"]};')
-        
-        
-        # Google status label
+
+        # Top-level tabs
+        self.main_tabs.setStyleSheet(f'''
+            QTabWidget::pane {{
+                border: none;
+                background-color: {t['bg']};
+            }}
+            QTabBar::tab {{
+                background-color: transparent;
+                color: {t['text_secondary']};
+                padding: 8px 20px;
+                margin-right: 2px;
+                font-size: 13px;
+                border-bottom: 2px solid transparent;
+            }}
+            QTabBar::tab:selected {{
+                color: {t['accent']};
+                font-weight: bold;
+                border-bottom: 2px solid {t['accent']};
+            }}
+            QTabBar::tab:hover {{
+                color: {t['text']};
+            }}
+        ''')
+
+        # Google status
         if '已连接' in self.google_status_label.text():
             self.google_status_label.setStyleSheet(f'color: {t["accent"]};')
         else:
             self.google_status_label.setStyleSheet(f'color: {t["danger"]};')
-        
-        # Action row
-        self.action_row.setStyleSheet(f'background-color: {t["card"]}; border-bottom: 1px solid {t["border"]};')
-        
-        # Language combo
+
+        # Toggle button
+        if self.is_enabled:
+            self.toggle_btn.setStyleSheet(f'''
+                QPushButton {{
+                    background-color: {t['accent']};
+                    color: white;
+                    border: none;
+                    border-radius: 13px;
+                    padding: 4px 14px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {t['accent_hover']};
+                }}
+            ''')
+        else:
+            self.toggle_btn.setStyleSheet(f'''
+                QPushButton {{
+                    background-color: {t['disabled_bg']};
+                    color: white;
+                    border: none;
+                    border-radius: 13px;
+                    padding: 4px 14px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {t['disabled_hover']};
+                }}
+            ''')
+
+        # Core card
+        for frame in self.findChildren(QFrame):
+            name = frame.objectName()
+            if name == 'core_card':
+                frame.setStyleSheet(
+                    f'QFrame#core_card {{ background-color: {t["card"]}; '
+                    f'border: 1px solid {t["border"]}; border-radius: 12px; }}'
+                )
+            elif name == 'stats_bar':
+                frame.setStyleSheet(
+                    f'QFrame#stats_bar {{ background-color: {t["card"]}; '
+                    f'border: 1px solid {t["border"]}; border-radius: 10px; }}'
+                )
+            elif name == 'card_sep':
+                frame.setStyleSheet(f'color: {t["border"]};')
+
+        # Lang combo
         self.lang_combo.setStyleSheet(f'''
             QComboBox {{
                 background-color: {t['input_bg']};
                 border: 1px solid {t['border']};
                 border-radius: 6px;
-                padding: 5px 10px;
-                font-size: 14px;
+                padding: 4px 10px;
+                font-size: 13px;
                 color: {t['text']};
             }}
             QComboBox:hover {{
@@ -1325,67 +1144,134 @@ class TaiwanConverterWindow(QMainWindow):
                 color: {t['text']};
             }}
         ''')
-        
-        # Direction button
-        self.direction_btn.setStyleSheet(f'''
+
+        # Hotkey value
+        if self.recording_hotkey:
+            self.hotkey_value_label.setStyleSheet(f'''
+                color: {t["accent"]};
+                background-color: {t["input_bg"]};
+                border: 1px dashed {t["accent"]};
+                border-radius: 6px;
+                padding: 2px 8px;
+            ''')
+        else:
+            self.hotkey_value_label.setStyleSheet(f'color: {t["accent"]};')
+
+        # Change hotkey btn
+        self.change_hotkey_btn.setStyleSheet(f'''
             QPushButton {{
                 background-color: {t['input_bg']};
                 border: 1px solid {t['border']};
-                border-radius: 8px;
-                padding: 5px 15px;
-                font-size: 13px;
-                color: {t['text']};
-            }}
-            QPushButton:checked {{
-                background-color: {t['accent']};
-                color: white;
-                border-color: {t['accent']};
+                border-radius: 13px;
+                padding: 4px 14px;
+                font-size: 12px;
+                color: {t['text_secondary']};
             }}
             QPushButton:hover {{
                 border-color: {t['accent']};
+                color: {t['accent']};
             }}
         ''')
-        
-        # Timezone bar
-        self.timezone_bar.setStyleSheet(f'background-color: {t["card_alt"]}; border-bottom: 1px solid {t["border"]};')
+
+        self.confirm_hotkey_btn.setStyleSheet(f'''
+            QPushButton {{
+                background-color: {t['accent']};
+                color: white;
+                border: none;
+                border-radius: 13px;
+                padding: 4px 14px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {t['accent_hover']};
+            }}
+        ''')
+
+        self.cancel_hotkey_btn.setStyleSheet(f'''
+            QPushButton {{
+                background-color: {t['input_bg']};
+                border: 1px solid {t['border']};
+                border-radius: 13px;
+                padding: 4px 14px;
+                font-size: 12px;
+                color: {t['text_secondary']};
+            }}
+            QPushButton:hover {{
+                border-color: {t['accent']};
+                color: {t['accent']};
+            }}
+        ''')
+
+        self.google_help_btn.setStyleSheet(f'''
+            QPushButton {{
+                background-color: {t['input_bg']};
+                color: {t['text_secondary']};
+                border: 1px solid {t['border']};
+                border-radius: 10px;
+                font-size: 11px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                border-color: {t['accent']};
+                color: {t['accent']};
+            }}
+        ''')
+
+        # AI 润色 help button
+        self.ai_help_btn.setStyleSheet(f'''
+            QPushButton {{
+                background-color: {t['input_bg']};
+                color: {t['text_secondary']};
+                border: 1px solid {t['border']};
+                border-radius: 10px;
+                font-size: 11px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                border-color: {t['accent']};
+                color: {t['accent']};
+            }}
+        ''')
+        # Timezone
         self.timezone_label.setStyleSheet(f'color: {t["link"]};')
-        
-        # Settings row
-        self.settings_row.setStyleSheet(f'background-color: {t["card_alt"]}; border-bottom: 1px solid {t["border"]};')
-        # Style the settings button inside settings_row
-        for btn in self.settings_row.findChildren(QPushButton):
+
+        # Stats label
+        self.stats_label.setStyleSheet(f'color: {t["text_secondary"]}; font-size: 12px;')
+
+        # Tutorial & Feedback buttons
+        for btn in (self.tutorial_btn, self.feedback_btn):
             btn.setStyleSheet(f'''
                 QPushButton {{
                     background-color: {t['card']};
+                    color: {t['text_secondary']};
                     border: 1px solid {t['border']};
                     border-radius: 8px;
                     padding: 6px 16px;
-                    font-size: 14px;
-                    font-weight: bold;
-                    color: {t['text']};
+                    font-size: 12px;
                 }}
                 QPushButton:hover {{
-                    background-color: {t['accent']};
-                    color: white;
+                    background-color: {t['card_alt']};
                     border-color: {t['accent']};
+                    color: {t['accent']};
                 }}
             ''')
-        
-        # Content tabs
+
+        # ── Toolbox tab widgets ──
+        # Content tabs (templates + history)
         self.content_tabs.setStyleSheet(f'''
             QTabWidget::pane {{
                 background-color: {t['card']};
-                border: none;
-                border-top: 1px solid {t['border']};
+                border: 1px solid {t['border']};
+                border-radius: 6px;
             }}
             QTabBar::tab {{
                 background-color: {t['tab_bg']};
                 color: {t['text_secondary']};
-                padding: 8px 20px;
+                padding: 6px 16px;
                 margin-right: 2px;
                 border-top-left-radius: 4px;
                 border-top-right-radius: 4px;
-                font-size: 14px;
+                font-size: 13px;
             }}
             QTabBar::tab:selected {{
                 background-color: {t['tab_selected_bg']};
@@ -1396,8 +1282,7 @@ class TaiwanConverterWindow(QMainWindow):
                 background-color: {t['hover']};
             }}
         ''')
-        
-        # Templates tab
+
         self.templates_tab.setStyleSheet(f'''
             QTabWidget::pane {{
                 border: 1px solid {t['border']};
@@ -1418,8 +1303,7 @@ class TaiwanConverterWindow(QMainWindow):
                 color: {t['accent']};
             }}
         ''')
-        
-        # Template search
+
         self.template_search.setStyleSheet(f'''
             QLineEdit {{
                 background-color: {t['input_bg']};
@@ -1430,8 +1314,7 @@ class TaiwanConverterWindow(QMainWindow):
                 color: {t['text']};
             }}
         ''')
-        
-        # History list
+
         self.history_list.setStyleSheet(f'''
             QListWidget {{
                 background-color: {t['input_bg']};
@@ -1448,58 +1331,16 @@ class TaiwanConverterWindow(QMainWindow):
                 background-color: {t['hover']};
             }}
         ''')
-        
-        # Status bar
-        self.status_bar_frame.setStyleSheet(f'background-color: {t["bg"]};')
-        self.stats_label.setStyleSheet(f'color: {t["text_secondary"]};')
+
         self.preview_original.setStyleSheet(f'color: {t["text_secondary"]};')
         self.preview_converted.setStyleSheet(f'color: {t["text_secondary"]};')
-        self.char_count_label.setStyleSheet(f'color: {t["text_secondary"]};')
-        self.sensitive_warning_label.setStyleSheet(f'color: {t["danger"]};')
-        
-        # Toggle button (will be updated by toggle_enabled)
-        if self.is_enabled:
-            self.toggle_btn.setStyleSheet(f'''
-                QPushButton {{
-                    background-color: {t['accent']};
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    padding: 5px 15px;
-                    font-size: 13px;
-                }}
-                QPushButton:hover {{
-                    background-color: {t['accent_hover']};
-                }}
-            ''')
-        else:
-            self.toggle_btn.setStyleSheet(f'''
-                QPushButton {{
-                    background-color: {t['disabled_bg']};
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    padding: 5px 15px;
-                    font-size: 13px;
-                }}
-                QPushButton:hover {{
-                    background-color: {t['disabled_hover']};
-                }}
-            ''')
-    
-    def toggle_theme(self):
-        self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
-        self.config['theme'] = self.current_theme
-        save_config(self.config)
-        self.apply_theme()
-        self.load_templates_ui()
     
     def init_tray(self):
         pixmap = QPixmap(32, 32)
-        pixmap.fill(Qt.transparent)
+        pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setBrush(QColor('#07C160'))
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(4, 4, 24, 24)
         painter.end()
         
@@ -1537,7 +1378,7 @@ class TaiwanConverterWindow(QMainWindow):
         self.activateWindow()
     
     def tray_activated(self, reason):
-        if reason == QSystemTrayIcon.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show_and_activate()
     
     def start_listening(self):
@@ -1554,7 +1395,7 @@ class TaiwanConverterWindow(QMainWindow):
             self.listener = None
     
     def toggle_enabled(self):
-        t = THEMES[self.current_theme]
+        t = THEMES['light']
         self.is_enabled = not self.is_enabled
         if self.is_enabled:
             self.toggle_btn.setText('⏸ 暂停')
@@ -1563,9 +1404,9 @@ class TaiwanConverterWindow(QMainWindow):
                     background-color: {t['accent']};
                     color: white;
                     border: none;
-                    border-radius: 8px;
-                    padding: 5px 15px;
-                    font-size: 13px;
+                    border-radius: 13px;
+                    padding: 4px 14px;
+                    font-size: 12px;
                 }}
                 QPushButton:hover {{
                     background-color: {t['accent_hover']};
@@ -1579,9 +1420,9 @@ class TaiwanConverterWindow(QMainWindow):
                     background-color: {t['disabled_bg']};
                     color: white;
                     border: none;
-                    border-radius: 8px;
-                    padding: 5px 15px;
-                    font-size: 13px;
+                    border-radius: 13px;
+                    padding: 4px 14px;
+                    font-size: 12px;
                 }}
                 QPushButton:hover {{
                     background-color: {t['disabled_hover']};
@@ -1612,33 +1453,227 @@ class TaiwanConverterWindow(QMainWindow):
     
     def start_recording_hotkey(self):
         self.recording_hotkey = True
-        QMessageBox.information(self, '设置快捷键', '请按下新的快捷键组合...')
-    
-    def finish_recording_hotkey(self, modifier: str, key: str):
+        self.pending_hotkey = None
+        self.hotkey_value_label.setText('请按下快捷键...')
+        self.change_hotkey_btn.hide()
+        self.confirm_hotkey_btn.show()
+        self.cancel_hotkey_btn.show()
+        self.apply_theme()
+
+    def cancel_recording_hotkey(self):
         self.recording_hotkey = False
-        self.config['hotkey'] = {'modifier': modifier, 'key': key}
-        save_config(self.config)
-        QMessageBox.information(self, '成功', f'快捷键已设置为: {self.format_hotkey()}')
+        self.pending_hotkey = None
+        self.hotkey_value_label.setText(self.format_hotkey())
+        self.confirm_hotkey_btn.hide()
+        self.cancel_hotkey_btn.hide()
+        self.change_hotkey_btn.show()
+        self.apply_theme()
+
+    def finish_recording_hotkey(self):
+        if self.pending_hotkey:
+            modifier, key = self.pending_hotkey
+            self.config['hotkey'] = {'modifier': modifier, 'key': key}
+            save_config(self.config)
+        self.recording_hotkey = False
+        self.hotkey_value_label.setText(self.format_hotkey())
+        self.pending_hotkey = None
+        self.confirm_hotkey_btn.hide()
+        self.cancel_hotkey_btn.hide()
+        self.change_hotkey_btn.show()
+        self.apply_theme()
+
+    def show_google_help(self):
+        QMessageBox.information(
+            self,
+            'Google 翻译服务说明',
+            '本工具通过 Google 翻译检测网络连接状态\n\n'
+            '• 台湾繁体 / 香港繁体：不依赖 Google 翻译，'
+            '使用本地词典 + OpenCC + AI 润色，'
+            '离线也能用\n\n'
+            '• 其他语言（日语、韩语、泰语等）：'
+            '依赖 Google 翻译，需要保持网络连接'
+            '且能访问 Google 服务\n\n'
+            '如果显示“未连接”：\n'
+            '  - 台湾/香港繁体用户可正常使用，不受影响\n'
+            '  - 其他语言用户请检查网络或代理设置\n\n'
+            '翻译结果仅供参考，建议人工校对重要内容'
+        )
     
+    def show_tutorial(self):
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle('BB Typer - 使用教程')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            '<h3>🌟 一键翻译，无缝运营海外社区</h3>'
+            '<p>专为<b>海外游戏社区运营</b>打造的智能翻译工具，'
+            '让每条回复都像本地人写的一样自然。</p>'
+            '<hr>'
+            '<h4>✨ 核心功能</h4>'
+            '<p><b>🔄 智能双向翻译</b><br>'
+            '在聊天对话框中输入文字，按下快捷键直接选中并转换<br>'
+            '再次按下快捷键，自动转换回简体中文</p>'
+            '<p><b>🇹🇼 台湾/香港本地化</b><br>'
+            '不是简单繁简转换！内置 <b>1600+ 台湾词典</b>、<b>1100+ 香港词典</b><br>'
+            '“卧槽”→“靠北”、“服务器”→“伺服器”、“充值”→“傲值”<br>'
+            '再经 AI 润色，语气像本地人发文一样自然</p>'
+            '<p><b>🌍 多语言支持</b><br>'
+            '日语、韩语、英语、泰语、法语，覆盖主流市场</p>'
+            '<p><b>⚡ 快捷回复模板</b><br>'
+            '预设公告/回复/致歉/问候等场景模板，一键复制发送<br>'
+            '支持自定义模板、导入导出，团队共享</p>'
+            '<hr>'
+            '<h4>🚀 使用方法</h4>'
+            '<p><b>1.</b> 选择目标语言<br>'
+            '<b>2.</b> 在对话框中输入文字，按下快捷键即可选中并转换<br>'
+            '<b>3.</b> 再次按下快捷键，直接转换回简体中文</p>'
+        )
+        msg.exec()
+
+    def open_feedback(self):
+        import webbrowser
+        webbrowser.open('https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=8b2rdb48-2c41-4de2-ac3d-448828648b5f')
+
+    def check_for_updates(self):
+        """Check GitHub Releases for new version"""
+        import threading
+        def _check():
+            try:
+                url = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+                req = urllib.request.Request(url)
+                req.add_header('Accept', 'application/vnd.github.v3+json')
+                req.add_header('User-Agent', 'BB-Typer')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    latest = data.get('tag_name', '').lstrip('v')
+                    if latest and latest != APP_VERSION:
+                        download_url = data.get('html_url', '')
+                        self._update_info = {
+                            'version': latest,
+                            'url': download_url,
+                            'body': data.get('body', '')
+                        }
+                        # Emit signal to show dialog on main thread
+                        QTimer.singleShot(0, self._show_update_dialog)
+            except Exception:
+                pass  # Silent fail, don't bother user
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _show_update_dialog(self):
+        info = getattr(self, '_update_info', None)
+        if not info:
+            return
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle('发现新版本')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            f'<b>发现新版本 v{info["version"]}</b><br><br>'
+            f'当前版本：v{APP_VERSION}<br>'
+            f'最新版本：v{info["version"]}<br><br>'
+            '点击「下载更新」跳转到下载页面'
+        )
+        download_btn = msg.addButton('下载更新', QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton('稍后再说', QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() == download_btn:
+            import webbrowser
+            webbrowser.open(info['url'])
+    def toggle_ai_polish(self):
+        current = self.config.get('llm_polish', True)
+        self.config['llm_polish'] = not current
+        save_config(self.config)
+        self.update_ai_status()
+
+    def update_ai_status(self):
+        lang_key = self.config.get('target_lang', 'zh-TW')
+        lang_config = TARGET_LANGUAGES.get(lang_key, TARGET_LANGUAGES['zh-TW'])
+        supports_polish = lang_config[2]  # True = 支持本地管道+AI润色
+        enabled = self.config.get('llm_polish', True)
+        t = THEMES['light']
+
+        if not supports_polish:
+            # 该语言不支持 AI 润色
+            self.ai_status_lbl.setText('➖ 不适用')
+            self.ai_status_lbl.setStyleSheet('color: #999999; font-size: 11px;')
+            self.ai_toggle_btn.setText('不适用')
+            self.ai_toggle_btn.setEnabled(False)
+            self.ai_toggle_btn.setStyleSheet(f'''
+                QPushButton {{
+                    background-color: {t['card']};
+                    color: #BBBBBB;
+                    border: 1px solid {t['border']};
+                    border-radius: 6px;
+                    font-size: 11px;
+                    padding: 2px 10px;
+                }}
+            ''')
+        elif enabled:
+            self.ai_toggle_btn.setEnabled(True)
+            self.ai_status_lbl.setText('✅ 已开启')
+            self.ai_status_lbl.setStyleSheet('color: #07C160; font-size: 11px;')
+            self.ai_toggle_btn.setText('关闭')
+            self.ai_toggle_btn.setStyleSheet(f'''
+                QPushButton {{
+                    background-color: {t['card']};
+                    color: {t['text_secondary']};
+                    border: 1px solid {t['border']};
+                    border-radius: 6px;
+                    font-size: 11px;
+                    padding: 2px 10px;
+                }}
+                QPushButton:hover {{ border-color: {t['danger']}; color: {t['danger']}; }}
+            ''')
+        else:
+            self.ai_toggle_btn.setEnabled(True)
+            self.ai_status_lbl.setText('⚪ 已关闭')
+            self.ai_status_lbl.setStyleSheet('color: #999999; font-size: 11px;')
+            self.ai_toggle_btn.setText('开启')
+            self.ai_toggle_btn.setStyleSheet(f'''
+                QPushButton {{
+                    background-color: {t['accent']};
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 11px;
+                    padding: 2px 10px;
+                }}
+                QPushButton:hover {{ background-color: {t['accent_hover']}; }}
+            ''')
+
+    def show_ai_help(self):
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle('AI 润色说明')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            '<b>什么是 AI 润色？</b><br><br>'
+            '台湾/香港繁体模式下，翻译结果会经过 AI 进一步润色，<br>'
+            '让文字更像本地人写的，而不是生硬的机器翻译。<br><br>'
+            '<b>效果对比：</b><br>'
+            '│ 无润色：親愛的玩家們，伺服器<b>將於</b>今日進行維護更新<br>'
+            '│ 有润色：各位玩家們，伺服器今天<b>會</b>進行維護更新<b>嗔！</b><br><br>'
+            '│ 无润色：靠北這個 bug 也太<b>離譜</b>了吧<br>'
+            '│ 有润色：靠北這個 bug 也太<b>扯</b>了吧<br><br>'
+            '│ 无润色：這個活動太<b>強</b>了，獎勵超級豐厚<br>'
+            '│ 有润色：這個活動 <b>hen 讚欸</b>，獎品超豐厚，大家快來<b>參加啦！</b><br><br>'
+            '<b>适用范围：</b><br>'
+            '✅ 台湾繁体、香港繁体：自动润色<br>'
+            'ℹ️ 日语、韩语、英语、泰语、法语：暂不适用'
+        )
+        msg.exec()
+
     def on_lang_changed(self, index):
         lang_key = self.lang_combo.itemData(index)
         self.config['target_lang'] = lang_key
+        # 台湾/香港自动开启 AI 润色
+        lang_config = TARGET_LANGUAGES.get(lang_key)
+        if lang_config and lang_config[2]:
+            self.config['llm_polish'] = True
         save_config(self.config)
         self.update_timezone_display()
+        self.update_ai_status()
 
-    def toggle_direction(self):
-        if self.direction_btn.isChecked():
-            self.config['translate_direction'] = 'foreign_to_cn'
-        else:
-            self.config['translate_direction'] = 'cn_to_foreign'
-        save_config(self.config)
-    
-    def open_settings(self):
-        dialog = SettingsDialog(self, self.config)
-        if dialog.exec_() == QDialog.Accepted:
-            self.config = load_config()
-            self.update_timezone_display()
-    
     def update_timezone_display(self):
         time_strs = []
         # Always show Beijing time
@@ -1657,41 +1692,13 @@ class TaiwanConverterWindow(QMainWindow):
         self.key_count += 1
     
     def update_conversion_display(self, original: str, converted: str):
-        t = THEMES[self.current_theme]
         try:
             orig_display = original[:50] + '...' if len(original) > 50 else original
             conv_display = converted[:50] + '...' if len(converted) > 50 else converted
             self.preview_original.setText(f'原文: {orig_display}')
             self.preview_converted.setText(f'转换: {conv_display}')
-            
-            platform = self.config.get('platform', 'Discord')
-            limit = PLATFORM_LIMITS.get(platform, 2000)
-            char_count = len(converted)
-            
-            if char_count > limit:
-                self.char_count_label.setText(f'📋 {char_count}/{limit}')
-                self.char_count_label.setStyleSheet(f'color: {t["danger"]};')
-            else:
-                self.char_count_label.setText(f'📋 {char_count}/{limit}')
-                self.char_count_label.setStyleSheet(f'color: {t["text_secondary"]};')
-            
-            # Detect sensitive words - direct call since we're already on main thread
-            sensitive_dict = self.config.get('sensitive_words', SENSITIVE_WORDS)
-            sensitive_words = detect_sensitive_words(converted, sensitive_dict)
-            self.show_sensitive_warning(sensitive_words)
         except Exception as e:
             print(f'[显示错误] {e}')
-    
-    def show_sensitive_warning(self, words):
-        try:
-            if words:
-                warning_text = ', '.join(str(w) for w in words)
-                self.sensitive_warning_label.setText(f'⚠️ 检测到敏感词: {warning_text}')
-                self.sensitive_warning_label.show()
-            else:
-                self.sensitive_warning_label.hide()
-        except Exception as e:
-            print(f'[敏感词警告错误] {e}')
 
     def check_google_connectivity(self):
         def _check():
@@ -1710,7 +1717,7 @@ class TaiwanConverterWindow(QMainWindow):
         Thread(target=_check, daemon=True).start()
     
     def update_google_status(self, connected: bool):
-        t = THEMES[self.current_theme]
+        t = THEMES['light']
         try:
             if connected:
                 self.google_status_label.setText('🟢 Google已连接')
@@ -1721,15 +1728,8 @@ class TaiwanConverterWindow(QMainWindow):
         except Exception as e:
             print(f'[Google状态错误] {e}')
 
-    def on_sensitive_words_loaded(self, words):
-        """Callback when sensitive words are loaded"""
-        global LOADED_SENSITIVE_WORDS
-        with SENSITIVE_WORDS_LOCK:
-            LOADED_SENSITIVE_WORDS = words
-        print(f'[Sensitive words] Loaded {len(words)} words')
-
     def load_templates_ui(self):
-        t = THEMES[self.current_theme]
+        t = THEMES['light']
         templates = self.config.get('quick_templates', DEFAULT_QUICK_TEMPLATES)
         
         self.templates_tab.clear()
@@ -1745,8 +1745,8 @@ class TaiwanConverterWindow(QMainWindow):
             grid.setContentsMargins(4, 4, 4, 4)
             
             for i, template in enumerate(items):
-                btn = QPushButton(template['name'])
-                btn.setToolTip(template['text'][:80] + '...' if len(template['text']) > 80 else template['text'])
+                btn = TemplateButton(template['name'], template['text'])
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setStyleSheet(f'''
                     QPushButton {{
                         background-color: {t['card']};
@@ -1777,57 +1777,54 @@ class TaiwanConverterWindow(QMainWindow):
         search_text = text.strip().lower()
         for tab_index in range(self.templates_tab.count()):
             scroll = self.templates_tab.widget(tab_index)
+            if scroll is None:
+                continue
             container = scroll.widget()
             if container:
                 grid = container.layout()
                 if grid:
                     for i in range(grid.count()):
-                        widget = grid.itemAt(i).widget()
-                        if widget:
+                        item = grid.itemAt(i)
+                        widget = item.widget() if item else None
+                        if widget is not None:
                             if not search_text:
                                 widget.show()
                             else:
                                 name = widget.text().lower()
-                                tip = (widget.toolTip() or '').lower()
+                                tip = (getattr(widget, '_full_text', '') or widget.toolTip() or '').lower()
                                 widget.setVisible(search_text in name or search_text in tip)
     
     def use_template(self, template_text: str):
         target_lang = self.config.get('target_lang', 'zh-TW')
         lang_config = TARGET_LANGUAGES.get(target_lang, TARGET_LANGUAGES['zh-TW'])
         _, google_lang_code, has_opencc_fallback = lang_config
-        
-        direction = self.config.get('translate_direction', 'cn_to_foreign')
-        
-        if direction == 'cn_to_foreign':
-            converted = google_translate(template_text, google_lang_code, 'zh-CN')
-            if not converted and has_opencc_fallback:
-                text_with_custom = template_text
-                for simplified, taiwan in self.custom_dict.items():
-                    text_with_custom = text_with_custom.replace(simplified, taiwan)
-                text_with_patterns = apply_sentence_patterns(text_with_custom)
-                converted = self.converter.convert(text_with_patterns)
-            elif not converted:
-                converted = template_text
-            
-            if target_lang == 'zh-TW' and self.config.get('llm_polish', True):
-                converted = llm_polish(converted)
-        else:
-            converted = google_translate(template_text, 'zh-CN', google_lang_code)
-            if not converted:
-                converted = template_text
-        
+
+        converted = google_translate(template_text, google_lang_code, 'zh-CN')
+        if not converted and has_opencc_fallback:
+            text_with_custom = template_text
+            for simplified, taiwan in self.custom_dict.items():
+                text_with_custom = text_with_custom.replace(simplified, taiwan)
+            text_with_patterns = apply_sentence_patterns(text_with_custom)
+            converted = self.converter.convert(text_with_patterns)
+        elif not converted:
+            converted = template_text
+
+        if target_lang == 'zh-TW' and self.config.get('llm_polish', True):
+            converted = llm_polish(converted)
         set_clipboard(converted)
-        
+
         self.signal.conversion_done.emit(template_text, converted)
-        
+
         chinese_count = sum(1 for c in template_text if '\u4e00' <= c <= '\u9fff')
         if chinese_count > 0:
             self.stats.add_chars(chinese_count)
             self.signal.stats_updated.emit()
-        
+
         self.history.add(template_text, converted, target_lang)
         self.update_history_display()
-    
+        # Show '已复制' tooltip near cursor
+        QToolTip.showText(QCursor.pos(), '✓ 已复制', self, self.rect(), 2000)
+
     def add_custom_template(self):
         dialog = QDialog(self)
         dialog.setWindowTitle('新增模板')
@@ -1926,12 +1923,12 @@ class TaiwanConverterWindow(QMainWindow):
                 if len(item.get('translated', '')) > 30:
                     trans += '...'
                 list_item = QListWidgetItem(f'{orig} → {trans}')
-                list_item.setData(Qt.UserRole, item.get('translated', ''))
+                list_item.setData(Qt.ItemDataRole.UserRole, item.get('translated', ''))
                 self.history_list.addItem(list_item)
         except Exception as e:
             print(f'[历史显示错误] {e}')
     def copy_history_item(self, item):
-        text = item.data(Qt.UserRole)
+        text = item.data(Qt.ItemDataRole.UserRole)
         set_clipboard(text)
         QMessageBox.information(self, '成功', '已复制到剪贴板')
     
@@ -1967,9 +1964,16 @@ class TaiwanConverterWindow(QMainWindow):
                 modifier = 'ctrl'
             elif self.alt_pressed:
                 modifier = 'alt'
-            
+
             if modifier:
-                self.finish_recording_hotkey(modifier, key.char)
+                self.pending_hotkey = (modifier, key.char.lower())
+                modifier_symbols = {
+                    'cmd': '⌘',
+                    'ctrl': '⌃',
+                    'alt': '⌥',
+                    'shift': '⇧'
+                }
+                self.hotkey_value_label.setText(f"{modifier_symbols.get(modifier, modifier)}+{key.char.upper()}")
             return
         
         if not self.is_enabled:
@@ -2031,26 +2035,50 @@ class TaiwanConverterWindow(QMainWindow):
                 lang_config = TARGET_LANGUAGES.get(target_lang, TARGET_LANGUAGES['zh-TW'])
                 _, google_lang_code, has_opencc_fallback = lang_config
                 
-                direction = self.config.get('translate_direction', 'cn_to_foreign')
-                
-                if direction == 'cn_to_foreign':
-                    converted_text = google_translate(original_text, google_lang_code, 'zh-CN')
-                    if not converted_text and has_opencc_fallback:
+                # 智能双向翻译：自动检测文本语言
+                if is_simplified_chinese(original_text):
+                    # 简体中文 → 目标语言
+                    if has_opencc_fallback:
+                        # 繁体中文（TW/HK）：词典替换 + 句式调整 + OpenCC 简转繁
+                        if target_lang == 'zh-HK':
+                            cur_dict = self.custom_dict_hk
+                            cur_converter = self.converter_hk
+                        else:
+                            cur_dict = self.custom_dict
+                            cur_converter = self.converter
                         text_with_custom = original_text
-                        for simplified, taiwan in self.custom_dict.items():
-                            text_with_custom = text_with_custom.replace(simplified, taiwan)
+                        for src, dst in cur_dict.items():
+                            text_with_custom = text_with_custom.replace(src, dst)
                         text_with_patterns = apply_sentence_patterns(text_with_custom)
-                        converted_text = self.converter.convert(text_with_patterns)
-                    elif not converted_text:
-                        converted_text = original_text
+                        converted_text = cur_converter.convert(text_with_patterns)
+                    else:
+                        # 其他语言：直接走 Google 翻译
+                        converted_text = google_translate(original_text, google_lang_code, 'zh-CN')
+                        if not converted_text:
+                            converted_text = original_text
                     
-                    if target_lang == 'zh-TW' and self.config.get('llm_polish', True):
-                        converted_text = llm_polish(converted_text)
+                    # LLM 润色（TW/HK 各用各的 prompt）
+                    if target_lang in ('zh-TW', 'zh-HK') and self.config.get('llm_polish', True):
+                        hk_prompt = LLM_SYSTEM_PROMPT_HK if target_lang == 'zh-HK' else ''
+                        converted_text = llm_polish(converted_text, hk_prompt)
+                    # 缓存翻译结果，用于反向精确还原
+                    if converted_text != original_text:
+                        self.translation_cache[converted_text.strip()] = original_text
+                        # 限制缓存大小，保留最近200条
+                        if len(self.translation_cache) > 200:
+                            oldest_key = next(iter(self.translation_cache))
+                            del self.translation_cache[oldest_key]
                 else:
-                    converted_text = google_translate(original_text, 'zh-CN', google_lang_code)
-                    if not converted_text:
-                        converted_text = original_text
-                
+                    # 目标语言 → 简体中文：优先查缓存精确还原
+                    cached = self.translation_cache.get(original_text.strip())
+                    if cached:
+                        converted_text = cached
+                        # 使用后从缓存移除（一次性还原）
+                        del self.translation_cache[original_text.strip()]
+                    else:
+                        converted_text = google_translate(original_text, 'zh-CN', google_lang_code)
+                        if not converted_text:
+                            converted_text = original_text
                 if converted_text != original_text:
                     set_clipboard(converted_text)
                     
@@ -2073,13 +2101,14 @@ class TaiwanConverterWindow(QMainWindow):
         finally:
             self.convert_lock.release()
     
-    def closeEvent(self, event):
-        event.ignore()
+    def closeEvent(self, a0):
+        if a0 is not None:
+            a0.ignore()
         self.hide()
         self.tray_icon.showMessage(
-            '海外社区运营小助理',
+            'BB Typer',
             '程序已最小化到系统托盘，继续在后台运行',
-            QSystemTrayIcon.Information,
+            QSystemTrayIcon.MessageIcon.Information,
             2000
         )
     

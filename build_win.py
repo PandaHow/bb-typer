@@ -11,7 +11,7 @@ def main():
     print("📦 Installing PyInstaller...")
     subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyinstaller'], check=True)
     
-    app_name = "海外社区运营小助理"
+    app_name = "BB Typer"
     
     cmd = [
         sys.executable, '-m', 'PyInstaller',
@@ -21,6 +21,7 @@ def main():
         '--noconfirm',
         '--clean',
         '--add-data', 'custom_dict.txt;.',
+        '--add-data', 'custom_dict_hk.txt;.',
         '--hidden-import', 'pynput.keyboard._win32',
         '--hidden-import', 'pynput.mouse._win32',
         '--hidden-import', 'PyQt5.sip',

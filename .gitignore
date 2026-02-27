@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+*.egg-info/
+.DS_Store
+.app.lock
+config.json
+stats.json
+history.json

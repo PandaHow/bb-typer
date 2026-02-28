@@ -8,7 +8,7 @@ def main():
     script_dir = Path(__file__).parent
     os.chdir(script_dir)
     
-    print("📦 Installing PyInstaller...")
+    print("[*] Installing PyInstaller...")
     subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyinstaller'], check=True)
     
     app_name = "BB Typer"
@@ -28,20 +28,20 @@ def main():
         'main.py'
     ]
     
-    print(f"🔨 Building {app_name}.exe...")
+    print(f"[*] Building {app_name}.exe...")
     print(f"Command: {' '.join(cmd)}")
     
     result = subprocess.run(cmd)
     
     if result.returncode == 0:
-        print(f"\n✅ Build successful!")
-        print(f"📁 Location: {script_dir}\\dist\\{app_name}.exe")
+        print(f"\n[OK] Build successful!")
+        print(f"[>] Location: {script_dir}\\dist\\{app_name}.exe")
         print(f"\nUsage:")
         print(f"  1. Copy {app_name}.exe to desired location")
         print(f"  2. Double-click to run")
         print(f"  3. May need to run as Administrator on first use")
     else:
-        print(f"\n❌ Build failed with code: {result.returncode}")
+        print(f"\n[FAIL] Build failed with code: {result.returncode}")
         sys.exit(1)
 
 if __name__ == '__main__':

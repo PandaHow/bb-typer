@@ -460,7 +460,8 @@ def set_clipboard(text: str):
     elif IS_MACOS:
         subprocess.run(['pbcopy'], input=text.encode('utf-8'), timeout=1)
     elif IS_WINDOWS:
-        subprocess.run(['powershell', '-command', f'Set-Clipboard -Value "{text}"'], timeout=1)
+        # Use clip.exe via stdin to avoid shell injection issues
+        subprocess.run(['clip'], input=text.encode('utf-16-le'), timeout=1)
 
 
 def get_modifier_key() -> Key:
@@ -2121,14 +2122,18 @@ class TaiwanConverterWindow(QMainWindow):
 
 
 def main():
-    # Single instance lock
-    import fcntl
+    # Single instance lock (cross-platform)
     lock_fp = open(LOCK_FILE, 'w')
     try:
-        fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if IS_WINDOWS:
+            import msvcrt
+            msvcrt.locking(lock_fp.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_fp.write(str(os.getpid()))
         lock_fp.flush()
-    except IOError:
+    except (IOError, OSError):
         print('程序已在运行中，激活现有窗口')
         sys.exit(0)
     
@@ -2136,7 +2141,11 @@ def main():
     app.setStyle('Fusion')
     app.setQuitOnLastWindowClosed(False)
     
-    font = QFont('PingFang SC', 13)
+    # Cross-platform font selection
+    if IS_WINDOWS:
+        font = QFont('Microsoft YaHei UI', 9)
+    else:
+        font = QFont('PingFang SC', 13)
     app.setFont(font)
     
     window = TaiwanConverterWindow()
@@ -2145,11 +2154,19 @@ def main():
     ret = app.exec_()
     
     # Release lock
-    fcntl.flock(lock_fp, fcntl.LOCK_UN)
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            msvcrt.locking(lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fp, fcntl.LOCK_UN)
+    except Exception:
+        pass
     lock_fp.close()
     try:
         LOCK_FILE.unlink()
-    except:
+    except Exception:
         pass
     sys.exit(ret)
 
